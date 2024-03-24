@@ -21,6 +21,7 @@ namespace Lab5
         public List<double[]> layers;
         private List<double[]> layersErrors;
         private List<double[,]> weights;
+        private List<double[]> biasweights;
 
         private double educationWeight = 0.1;
 
@@ -31,20 +32,25 @@ namespace Lab5
             layersErrors = [];
             weights = [];
             statistics = [];
+            biasweights = [];
 
             if (neuronsCounts != null && neuronsCounts.Count > 2)
             {
                 layers.Add(new double[neuronsCounts[0]]);
                 layersErrors.Add(new double[neuronsCounts[0]]);
+                biasweights.Add(new double[neuronsCounts[0]]);
                 for (int i = 1; i < neuronsCounts.Count; i++)
                 {
                     double[] layer = new double[neuronsCounts[i]];
+                    double[] biases = new double[neuronsCounts[i]];
                     for (int j = 0; j < layer.Length; j++)
                     {
                         layer[j] = 0;
+                        biases[j] = _random.NextDouble() * 2 - 1;
                     }
                     layers.Add(layer);
                     layersErrors.Add(layer);
+                    biasweights.Add(biases);
 
                     double[,] tempweights = new double[neuronsCounts[i - 1], neuronsCounts[i]];
                     for (int j = 0; j < neuronsCounts[i - 1]; j++)
@@ -99,7 +105,7 @@ namespace Lab5
                 for (int j = 0; j < layers[i].Length; j++)
                 {
                     // Заполнение одного нейрона j слоя i
-                    double sum = 0;
+                    double sum = biasweights[i][j];
                     for (int k = 0; k < layers[i - 1].Length; k++)
                     {
                         sum += layers[i - 1][k] * weights[i - 1][k, j];
@@ -178,22 +184,24 @@ namespace Lab5
                     {
                         sum += weights[i][j, k] * layersErrors[i + 1][k];
                     }
-                    layersErrors[i][j] = SigmaFunction(sum * layers[i][j] * (1 - layers[i][j]));
+                    layersErrors[i][j] = sum * layers[i][j] * (1 - layers[i][j]);
                 }
             }
 
             // Пересчет всех весов
             for (int i = 0; i < weights.Count; i++)
             {
-                // Пересчет весов одного слоя
-                for (int j = 0; j < layers[i].Length; j++)
+                // Пересчет весов одного слоя (обход нейронов слоя "куда")
+                for (int k = 0; k < layers[i + 1].Length; k++)
                 {
-                    // Пересчет весов от одного нейрона
-                    for (int k = 0; k < layers[i + 1].Length; k++)
+                    // Пересчет весов от одного нейрона слоя "куда", обходов нейронов слоя "откуда"
+                    for (int j = 0; j < layers[i].Length; j++)
                     {
                         weights[i][j, k] += educationWeight * layersErrors[i + 1][k] * layers[i][j];
                     }
+                    biasweights[i + 1][k] += educationWeight * layersErrors[i + 1][k];
                 }
+
             }
         }
         public void Education(int stepCount)
@@ -218,6 +226,5 @@ namespace Lab5
                 }
             }
         }
-
     }
 }
