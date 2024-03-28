@@ -1,9 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics;
+using System.DirectoryServices.ActiveDirectory;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
+using System.Xml.Serialization;
 
 namespace Lab5
 {
@@ -11,28 +15,49 @@ namespace Lab5
     {
         public int allAnswers = 0;
         public int rightAnswers = 0;
-        public List<double> rootMeanSquareErrors = [];
+        public double[] rootMeanSquareErrors;
+        public bool done;
         public double percentage => (double)rightAnswers / (double)allAnswers;
     }
 
     public class NeuralNetwork
     {
         readonly private Random _random = new Random();
+
         public List<double[]> layers;
         private List<double[]> layersErrors;
         private List<double[,]> weights;
         private List<double[]> biasweights;
 
-        private double educationWeight = 0.1;
-
+        private string[] symbols;
+        private string sampleDirectory = ".\\";
+        private double educationWeight = 0.75;
         public List<Statistic> statistics;
-        public NeuralNetwork(List<int> neuronsCounts)
+
+        public NeuralNetwork(NNSerializeConfiguration nconf) 
+        {
+            if (nconf != null)
+            {
+                layers = nconf.layers.ToList();
+                layersErrors = nconf.layersErrors.ToList();
+                weights = Extensions.ToMultidimensionalArray(nconf.weights).ToList();
+                biasweights = nconf.biasweights.ToList();
+                symbols = nconf.symbols;
+                statistics = nconf.statistics.ToList();
+            }
+            else
+            {
+                throw new Exception("nconf is null!");
+            }
+        }
+        public NeuralNetwork(List<int> neuronsCounts, string[] symbolsForRecognize)
         {
             layers = [];
             layersErrors = [];
             weights = [];
             statistics = [];
             biasweights = [];
+            symbols = symbolsForRecognize;
 
             if (neuronsCounts != null && neuronsCounts.Count > 2)
             {
@@ -88,12 +113,12 @@ namespace Lab5
                 }
             }
         }
-        public Bitmap GetBitmapBySymbol(string symbol, int step)
+        public Bitmap GetBitmapBySymbol(int symbolIndex, int imageNumber)
         {
-            string strStep = $"{step:D5}";
-            return new Bitmap(Image.FromFile($".\\{symbol}\\{strStep}.png"));
+            string imageNumberString = $"{imageNumber:D5}";
+            return new Bitmap(Image.FromFile($".\\{symbols[symbolIndex]}\\{imageNumberString}.png"));
         }
-        public int Recognize(Bitmap bitmap)
+        public string Recognize(Bitmap bitmap)
         {
             // Заполнение input слоя
             BitmapToInputLayer(bitmap);
@@ -121,27 +146,28 @@ namespace Lab5
             {
                 (maxValue, maxIndex) = maxValue < layers.Last()[i] ? (layers.Last()[i], i) : (maxValue, maxIndex);
             }
-            return maxIndex;
+            return symbols[maxIndex];
         }
         public double CollectStatistics(int stepCount)
         {
             Statistic stat = new Statistic();
+            stat.rootMeanSquareErrors = new double[stepCount];
             for (int step = 0; step < stepCount; step++)
             {
                 int outputLayerSize = layers.Last().Length;
-                int realSymbol = step % outputLayerSize;
+                int symbolIndex = step % outputLayerSize;
                 int imageNumber = step / outputLayerSize;
-                int guessSymbol = Recognize(GetBitmapBySymbol(realSymbol.ToString(), imageNumber));
+                string guessSymbol = Recognize(GetBitmapBySymbol(symbolIndex, imageNumber));
 
                 double[] expectedResult = new double[outputLayerSize];
                 for (int i = 0; i < expectedResult.Length; i++)
                 {
                     expectedResult[i] = 0;
                 }
-                expectedResult[realSymbol] = 1;
+                expectedResult[symbolIndex] = 1;
 
                 stat.allAnswers++;
-                if (realSymbol == guessSymbol)
+                if (symbols[symbolIndex] == guessSymbol)
                     stat.rightAnswers++;
 
                 double error = 0;
@@ -150,26 +176,21 @@ namespace Lab5
                     error += Math.Pow(expectedResult[i] - layers.Last()[i], 2);
                 }
                 error *= 0.5;
-                stat.rootMeanSquareErrors.Add(error);
+                stat.rootMeanSquareErrors[step] = error;
             }
             statistics.Add(stat);
             return stat.percentage;
         }
 
-        private void Educate(double[] expectedOutput)
+        private void EducatePart1(double[] expectedOutput, double[] actualOutput = null)
         {
-            // Подсчет среднеквадратичной ошибки
-            double error = 0;
-            for (int i = 0; i < layers.Last().Length; i++)
-            {
-                error += Math.Pow(expectedOutput[i] - layers.Last()[i], 2);
-            }
-            error /= 2;
+            if (actualOutput == null)
+                actualOutput = layers.Last();
 
             // Подсчет ошибки выходного слоя
-            for (int i = 0; i < layers.Last().Length; i++)
+            for (int i = 0; i < actualOutput.Length; i++)
             {
-                layersErrors.Last()[i] = (expectedOutput[i] - layers.Last()[i]) * layers.Last()[i] * (1 - layers.Last()[i]);
+                layersErrors.Last()[i] = (expectedOutput[i] - actualOutput[i]) * actualOutput[i] * (1 - actualOutput[i]);
             }
 
             // Подсчет ошибок скрытых слоев
@@ -187,44 +208,204 @@ namespace Lab5
                     layersErrors[i][j] = sum * layers[i][j] * (1 - layers[i][j]);
                 }
             }
-
+        }
+        private void EducatePart2()
+        {
             // Пересчет всех весов
             for (int i = 0; i < weights.Count; i++)
             {
                 // Пересчет весов одного слоя (обход нейронов слоя "куда")
                 for (int k = 0; k < layers[i + 1].Length; k++)
                 {
-                    // Пересчет весов от одного нейрона слоя "куда", обходов нейронов слоя "откуда"
+                    // Пересчет весов от одного нейрона слоя "куда", обход нейронов слоя "откуда"
                     for (int j = 0; j < layers[i].Length; j++)
                     {
                         weights[i][j, k] += educationWeight * layersErrors[i + 1][k] * layers[i][j];
                     }
                     biasweights[i + 1][k] += educationWeight * layersErrors[i + 1][k];
                 }
-
             }
+        }
+        private void Educate(double[] expectedOutput, double[] actualOutput = null)
+        {
+            EducatePart1(expectedOutput, actualOutput);
+            EducatePart2();
         }
         public void Education(int stepCount)
         {
             for (int step = 0; step < stepCount; step++)
             {
                 int outputLayerSize = layers.Last().Length;
-                int realSymbol = step % outputLayerSize;
-                int imageNumber = step / outputLayerSize;
-                int guessSymbol = Recognize(GetBitmapBySymbol(realSymbol.ToString(), imageNumber));
+                int symbolIndex = step % symbols.Length;
+                int imageNumber = step / symbols.Length;
+                string guessSymbol = Recognize(GetBitmapBySymbol(symbolIndex, imageNumber));
 
                 double[] expectedResult = new double[outputLayerSize];
                 for (int i = 0; i < expectedResult.Length; i++)
                 {
                     expectedResult[i] = 0;
                 }
-                expectedResult[realSymbol] = 1;
+                expectedResult[symbolIndex] = 1;
 
-                if (realSymbol != guessSymbol)
+                if (symbols[symbolIndex] != guessSymbol)
                 {
                     Educate(expectedResult);
                 }
             }
         }
+        public void GroupEducation(int stepCount, int groupSize)
+        {
+            int groupCount = stepCount / groupSize;
+            int groupElementCount = 0;
+
+            // Начальная инициализация группы - место сбора данных об ошибках на слоях и об активациях на слоях в процессе перебора группы
+            List<List<double[]>> layersList = new List<List<double[]>>();
+            List<List<double[]>> layerErrorsList = new List<List<double[]>>();
+            for (int j = 0; j < groupSize; j++)
+            {
+                layerErrorsList.Add(new List<double[]>());
+                layersList.Add(new List<double[]>());
+                for (int k = 0; k < layersErrors.Count; k++)
+                {
+                    layerErrorsList[j].Add(new double[layersErrors[k].Length]);
+                    layersList[j].Add(new double[layersErrors[k].Length]);
+                }
+            }
+
+            // Начальная инициализация средних значений, на основе которых будут пересчитываться веса
+            List<double[]> averageLayerErrors = new List<double[]>();
+            List<double[]> averageLayers = new List<double[]>();
+            for (int j = 0; j < layersErrors.Count; j++)
+            {
+                averageLayerErrors.Add(new double[layersErrors[j].Length]);
+                averageLayers.Add(new double[layersErrors[j].Length]);
+            }
+
+            for (int groupStep = 0; groupStep < groupCount; groupStep++)
+            {
+                // Перебор группы, сбор данных для подсчета средних значений
+                for (int stepInGroup = 0; stepInGroup < groupSize; stepInGroup++)
+                {
+                    int realStep = stepInGroup + groupStep * groupSize;
+
+                    int outputLayerSize = layers.Last().Length;
+                    int symbolIndex = realStep % symbols.Length;
+                    int imageNumber = realStep / symbols.Length;
+                    string guessSymbol = Recognize(GetBitmapBySymbol(symbolIndex, imageNumber));
+
+                    double[] expectedResult = new double[outputLayerSize];
+                    for (int i = 0; i < expectedResult.Length; i++)
+                    {
+                        expectedResult[i] = 0;
+                    }
+                    expectedResult[symbolIndex] = 1;
+
+                    EducatePart1(expectedResult);
+
+                    for (int k = 0; k < layersErrors.Count; k++)
+                    {
+                        for (int m = 0; m < layersErrors[k].Length; m++)
+                        {
+                            layerErrorsList[stepInGroup][k][m] = layersErrors[k][m];
+                            layersList[stepInGroup][k][m] = layers[k][m];
+                        }
+                    }
+                }
+
+                // Подсчет среднего
+                for (int j = 0; j < layerErrorsList[0].Count; j++)
+                {
+                    for (int k = 0; k < layerErrorsList[0][j].Length; k++)
+                    {
+                        averageLayerErrors[j][k] = 0;
+                        averageLayers[j][k] = 0;
+                        for (int i = 0; i < groupSize; i++)
+                        {
+                            averageLayerErrors[j][k] += layerErrorsList[i][j][k];
+                            averageLayers[j][k] += layersList[i][j][k];
+                        }
+                        averageLayerErrors[j][k] /= groupSize;
+                        averageLayers[j][k] /= groupSize;
+                    }
+                }
+
+                layersErrors = averageLayerErrors;
+                layers = averageLayers;
+                EducatePart2();
+            }
+        }
+        
+        public async void Serialize(string filename)
+        {
+            //XmlSerializer xmlSerializer = new XmlSerializer(typeof(NNSerializeConfiguration));
+            using (FileStream fs = new FileStream(filename, FileMode.OpenOrCreate))
+            {
+                NNSerializeConfiguration nconf = new NNSerializeConfiguration
+                    (
+                        layers.ToArray(),
+                        layersErrors.ToArray(),
+                        weights.ToArray(),
+                        biasweights.ToArray(),
+                        symbols,
+                        statistics.ToArray()
+                    );
+                //xmlSerializer.Serialize(fs, nconf);
+
+                JsonSerializerOptions options = new JsonSerializerOptions
+                {
+                    IncludeFields = true
+                };
+                await JsonSerializer.SerializeAsync(fs, nconf, options);
+            }
+        }
+        public async static Task<NeuralNetwork> Deserialize(string filename)
+        {
+            //XmlSerializer xmlSerializer = new XmlSerializer(typeof(NNSerializeConfiguration));
+            using (FileStream fs = new FileStream(filename, FileMode.OpenOrCreate))
+            {
+                JsonSerializerOptions options = new JsonSerializerOptions
+                {
+                    IncludeFields = true
+                };
+                NNSerializeConfiguration? nconf = await JsonSerializer.DeserializeAsync<NNSerializeConfiguration>(fs, options);
+
+                //NNSerializeConfiguration? nconf = xmlSerializer.Deserialize(fs) as NNSerializeConfiguration;
+
+                if (nconf != null)
+                    return new NeuralNetwork(nconf);
+                else
+                    return null;
+            }
+        }
     }
+
+    public class NNSerializeConfiguration
+    {
+        public double[][] layers;
+        public double[][] layersErrors;
+        public double[][][] weights;
+        public double[][] biasweights;
+        public string[] symbols;
+        public Statistic[] statistics;
+
+        public NNSerializeConfiguration(
+            double[][] layers, 
+            double[][] layersErrors, 
+            double[][,] weights,
+            double[][] biasweights, 
+            string[] symbols, 
+            Statistic[] statistics)
+        {
+            this.layers = layers;
+            this.layersErrors = layersErrors;
+            this.weights = Extensions.ToJaggedArray(weights);
+            this.biasweights = biasweights;
+            this.symbols = symbols;
+            this.statistics = statistics;
+        }
+
+        public NNSerializeConfiguration() { }
+
+    }
+
 }
